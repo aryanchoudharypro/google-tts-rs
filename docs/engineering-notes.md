@@ -16,6 +16,85 @@ User's stated constraints: no Node.js (RAM cost on low-spec machines is the
 explicit objection), Rust or Go preferred, incremental "take it slow but
 checked" pace — verify each step against ground truth before building on it.
 
+## 2026-08-22 update, part 7: **continuous reading is gapless.** The lookahead buffer, and the three bugs the first attempt introduced
+
+Reported symptom: in say-all, the voice stopped at every line break as though
+the line ended in a full stop. eSpeak and IBMTTS read straight through. A first
+attempt at a lookahead buffer failed and additionally introduced stutter
+("no its now still doing that+ now it seems to stutter as well").
+
+### Why line breaks sounded like full stops
+
+NVDA's speech manager sends the next utterance when the *index* of the
+previous one is reported (`_handleIndex` -> `shouldPush = endOfUtterance and
+not _synthStillSpeaking()` -> `_pushNextSpeech`), not when `synthDoneSpeaking`
+fires. An index reported at the exact end of the audio therefore leaves zero
+time to synthesize the next line: every boundary gets a gap the length of our
+own synthesis latency (60-150 ms here). eSpeak synthesizes in-process in a few
+milliseconds, so the same design costs it nothing.
+
+Fix: `_AudioFeed` reports the index while `LOOKAHEAD_MS` (250 ms) of audio is
+still queued in the device, so the next line is synthesized inside that window
+and its audio butts straight up against the current one. The cost is that the
+caret leads the voice by up to 250 ms in say-all.
+
+### What made it hard: chunk-granular retention
+
+The first implementation held back whole *chunks*, and broke at both extremes.
+
+- **Stutter.** Retaining a window from the very first chunk starved the device
+  at the start of every utterance - the retained buffer was exactly the cushion
+  the player needed.
+- **Cache hits.** `_SHORT_CACHE_MAX_CHARS = 200` hits arrive as one multi-second
+  blob, which passed straight through, leaving `flush()` with nothing to hang
+  the drain callback on. The driver then believed the device had drained while
+  seconds of audio were still queued and parked the speech worker in a blocking
+  `player.idle()`; measured "first audio +3797 ms" with 2-3.7 s buffered.
+- **Intermittent ~330 ms spikes.** `_audioDrained` was a single flag, so
+  utterance N's drain callback - which fires one window after N+1 has already
+  been handed to the worker - marked the stream drained while N+1 was still
+  playing. Same blocking `idle()`, same stall. Drain notifications are now
+  tagged with `_audioGeneration` and ignored if any audio has been fed since,
+  and `player.idle()` moved off the request path into the idle branch of
+  `_speech_loop`.
+
+`_AudioFeed` was rewritten over a `bytearray` instead of a chunk deque. It
+retains exactly `2 * window` bytes regardless of how the audio was delivered,
+releases everything earlier immediately, and always has a final slice for
+`mark()` to attach the callback to. Retaining one window instead of two made
+`mark()` fire `onDone` immediately on cache hits and the driver ran away
+(56 s buffered ahead).
+
+### Method: a simulator with a real playback clock
+
+Reasoning about NVDA's timing produced three wrong fixes in a row. What worked
+was `tests/sim_player.py` - a `WavePlayer` stand-in that models a playback
+clock, fires `onDone` from a 2 ms poll thread and records every underrun - plus
+`tests/test_continuity.py`, which drives the real `SynthDriver` exactly the way
+say-all does (speak, wait for index, speak the next) and prints per-line
+first-audio latency and how much audio was still buffered when the index fired.
+
+Progression on the 20-line run:
+
+```
+original                      3 underruns, gaps 62-78 ms
+after the stutter/generation fixes (6 lines)   no underruns
+20 lines, exposing the cache-hit bug           9 underruns, first audio +3797 ms
+one-window retention          no underruns but runaway, 56 s buffered ahead
+final (two-window retention)  no underruns, index at 235-249 ms buffered
+```
+
+Final measurement, base voice, 20 lines: wall clock 56.84 s for 56.74 s of
+audio - 100 ms of overhead across 19 utterance boundaries, i.e. ~5 ms per
+boundary. `tests/test_continuity.py 12 seanet` gives the same result on a
+Natural voice.
+
+### Running it
+
+`python tests/test_continuity.py [lines] [voice-substring]`. Needs the engine
+built and a voice pack installed, so it is not part of `build.ps1` - run it by
+hand after touching anything in the audio path.
+
 ## 2026-08-21 update, part 6: **Natural / seanet voices work.** Root cause was the stubbed `_emscripten_init_main_thread_js`
 
 **Status: solved and shipped.** All six Hindi Natural speakers and the

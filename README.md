@@ -62,6 +62,7 @@ cargo run --release --example seanet_voice    # every "Natural" speaker, end to 
 ```powershell
 python tests\test_driver.py         # text chunking and audio feeding, no NVDA needed
 python tests\test_native_bridge.py  # real bridge against a real engine process (build first)
+python tests\test_continuity.py 20  # say-all timing; reports any gap in playback
 ```
 
 ```powershell

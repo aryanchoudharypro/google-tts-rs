@@ -75,9 +75,12 @@ class _Notifier:
 	def __init__(self, name: str) -> None:
 		self.name = name
 		self.calls: list[dict] = []
+		self.handler = None
 
 	def notify(self, **kwargs) -> None:
 		self.calls.append(kwargs)
+		if self.handler is not None:
+			self.handler(**kwargs)
 
 	def register(self, handler) -> None:
 		pass
@@ -210,6 +213,12 @@ def _load_module(modname: str, pkg: types.ModuleType) -> types.ModuleType:
 def load_driver(nvdaConfigDir: Path | None = None) -> types.ModuleType:
 	"""Import the add-on's synth driver (`__init__.py`) with stubs in place."""
 	install_stubs(nvdaConfigDir)
+	return load_driver_module()
+
+
+def load_driver_module() -> types.ModuleType:
+	"""Same, but assumes `install_stubs` has already run, so a caller can
+	replace a stub (the audio player, say) before the driver imports it."""
 	pkg = types.ModuleType(PKG_NAME)
 	pkg.__path__ = [str(ADDON_SYNTH_DIR)]
 	sys.modules[PKG_NAME] = pkg

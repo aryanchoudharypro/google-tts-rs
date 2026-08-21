@@ -34,14 +34,20 @@ def _fed_bytes(player) -> int:
 	return sum(len(data) for data, _ in player.feeds)
 
 
-def test_audio_starts_flowing_before_the_utterance_ends():
-	"""Playback must not wait for the whole utterance: anything beyond two
-	lookahead windows is handed to the device as it arrives."""
+def test_short_utterances_are_delivered_whole():
+	_instance, player, feed = _feed_with_lookahead(250)
+	feed.feed(_ms(40))
+	assert _fed_bytes(player) == 0, "an utterance shorter than the cushion has nothing to release yet"
+	feed.flush()
+	assert _fed_bytes(player) == len(_ms(40)), "flush must hand over everything that was held"
+
+
+def test_audio_streams_out_once_two_windows_are_held():
 	_instance, player, feed = _feed_with_lookahead(250)
 	for _ in range(10):
 		feed.feed(_ms(100))
-	assert _fed_bytes(player) > 0, "long utterances must stream, not buffer"
-	assert _fed_bytes(player) <= len(_ms(1000)) - len(_ms(500))
+	fed = _fed_bytes(player)
+	assert fed == len(_ms(500)), "everything beyond two lookahead windows must reach the device"
 
 
 def test_index_is_reported_one_lookahead_window_early():
@@ -110,10 +116,12 @@ def test_flush_releases_everything_held_back():
 
 def test_reset_drops_held_audio():
 	_instance, player, feed = _feed_with_lookahead(250)
-	feed.feed(_ms(100))
+	for _ in range(10):
+		feed.feed(_ms(100))
+	before = _fed_bytes(player)
 	feed.reset()
 	feed.flush()
-	assert player.feeds == [], "held-back audio must not leak into the next utterance"
+	assert _fed_bytes(player) == before, "retained audio must not leak into the next utterance"
 
 
 def test_empty_chunks_are_ignored():
@@ -121,6 +129,17 @@ def test_empty_chunks_are_ignored():
 	feed.feed(b"")
 	feed.flush()
 	assert player.feeds == []
+
+
+def test_flush_leaves_nothing_behind_for_the_next_utterance():
+	_instance, player, feed = _feed_with_lookahead(250)
+	for _ in range(10):
+		feed.feed(_ms(100))
+	feed.flush()
+	player.feeds.clear()
+	feed.feed(_ms(40))
+	feed.flush()
+	assert _fed_bytes(player) == len(_ms(40)), "the next utterance must start from an empty buffer"
 
 
 def _segments(text: str, fastFirst: bool = False) -> list[str]:

@@ -68,75 +68,43 @@ class _AudioFeed:
 	def __init__(self, player: Any, lookaheadMs: int | None = None) -> None:
 		self._player = player
 		self._lock = threading.Lock()
-		self._pending: deque[bytes] = deque()
-		self._pendingBytes = 0
+		self._pending = bytearray()
 		lookahead = self.LOOKAHEAD_MS if lookaheadMs is None else lookaheadMs
 		self._window = max(0, int(SAMPLE_RATE * 2 * lookahead / 1000))
 
 	def feed(self, pcm: bytes) -> None:
 		if not pcm:
 			return
-		ready = []
 		with self._lock:
-			self._pending.append(pcm)
-			self._pendingBytes += len(pcm)
-			while self._pending and self._pendingBytes - len(self._pending[0]) >= 2 * self._window:
-				chunk = self._pending.popleft()
-				self._pendingBytes -= len(chunk)
-				ready.append(chunk)
-		for chunk in ready:
-			self._player.feed(chunk)
+			self._pending += pcm
+			release = len(self._pending) - 2 * self._window
+			if release <= 0:
+				return
+			chunk = bytes(self._pending[:release])
+			del self._pending[:release]
+		self._player.feed(chunk)
 
 	def mark(self, onDone: Any) -> None:
 		with self._lock:
-			pending = list(self._pending)
-			self._pending.clear()
-			self._pendingBytes = 0
-		if not pending:
-			onDone()
-			return
-
-		head: list[bytes] = []
-		tail: list[bytes] = []
-		tailBytes = 0
-		for chunk in reversed(pending):
-			if tailBytes < self._window:
-				tail.append(chunk)
-				tailBytes += len(chunk)
-			else:
-				head.append(chunk)
-		head.reverse()
-		tail.reverse()
-
-		with self._lock:
-			self._pending.extend(tail)
-			self._pendingBytes = sum(len(chunk) for chunk in tail)
-
+			split = max(0, len(self._pending) - self._window)
+			head = bytes(self._pending[:split])
+			del self._pending[:split]
 		if not head:
 			onDone()
 			return
-
-		for chunk in head[:-1]:
-			self._player.feed(chunk)
-		self._player.feed(head[-1], onDone=onDone)
+		self._player.feed(head, onDone=onDone)
 
 	def flush(self, onDone: Any = None) -> None:
 		with self._lock:
-			pending = list(self._pending)
+			pending = bytes(self._pending)
 			self._pending.clear()
-			self._pendingBytes = 0
 		if not pending:
-			if onDone is not None:
-				onDone()
 			return
-		for chunk in pending[:-1]:
-			self._player.feed(chunk)
-		self._player.feed(pending[-1], onDone=onDone)
+		self._player.feed(pending, onDone=onDone)
 
 	def reset(self) -> None:
 		with self._lock:
 			self._pending.clear()
-			self._pendingBytes = 0
 
 
 class SynthDriver(synthDriverHandler.SynthDriver):
@@ -188,6 +156,7 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		self._audioDrained = threading.Event()
 		self._audioDrained.set()
 		self._playerNeedsIdle = False
+		self._audioGeneration = 0
 		self._speechCondition = threading.Condition()
 		self._speechQueue: deque[_SpeechRequest] = deque()
 		self._activeCancelEvent: threading.Event | None = None
@@ -533,13 +502,17 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 	def _feed_audio(self, pcm: bytes) -> None:
 		if not pcm:
 			return
+		with self._speechCondition:
+			self._audioGeneration += 1
 		self._audioDrained.clear()
 		self._playerNeedsIdle = True
 		self._audioFeed.feed(pcm)
 
-	def _on_audio_drained(self) -> None:
-		self._audioDrained.set()
+	def _on_audio_drained(self, generation: int) -> None:
 		with self._speechCondition:
+			if generation != self._audioGeneration:
+				return
+			self._audioDrained.set()
 			self._speechCondition.notify()
 
 	def _mark_index(self, index: int, cancelEvent: threading.Event) -> None:
@@ -558,7 +531,8 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			return bool(self._speechQueue)
 
 	def _finish_request_audio(self) -> None:
-		self._audioFeed.flush(onDone=self._on_audio_drained)
+		generation = self._audioGeneration
+		self._audioFeed.flush(onDone=lambda: self._on_audio_drained(generation))
 
 	def _short_cache_key(self, text: str, options: dict[str, Any]) -> tuple[Any, ...] | None:
 		if len(text) > _SHORT_CACHE_MAX_CHARS:

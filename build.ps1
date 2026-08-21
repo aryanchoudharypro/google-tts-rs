@@ -33,7 +33,6 @@ $dist = Join-Path $repo "dist"
 
 function Write-Step($n, $text) { Write-Host "[$n] $text" -ForegroundColor Cyan }
 
-# ---------------------------------------------------------------- version
 $manifest = Join-Path $addon "manifest.ini"
 $version = (Select-String -Path $manifest -Pattern '^\s*version\s*=\s*(.+)$').Matches[0].Groups[1].Value.Trim()
 if (-not $version) { throw "Could not read version from $manifest" }
@@ -45,7 +44,6 @@ if ($Clean) {
     Remove-Item -Recurse -Force $nativeDir -ErrorAction SilentlyContinue
 }
 
-# ---------------------------------------------------------------- 1. engine
 Write-Step 1 "Building native engine (cargo build --release)"
 Push-Location $engine
 try {
@@ -61,7 +59,6 @@ try {
     Pop-Location
 }
 
-# ---------------------------------------------------------------- 3/4. python
 if (-not $SkipTests) {
     Write-Step 3 "Driver tests (no NVDA required)"
     python (Join-Path $repo "tests\test_driver.py")
@@ -73,16 +70,13 @@ if (-not $SkipTests) {
     Get-ChildItem $addon -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 }
 
-# ---------------------------------------------------------------- 5. bundle
 Write-Step 5 "Bundling server.exe into the add-on"
 New-Item -ItemType Directory -Path $nativeDir -Force | Out-Null
 Copy-Item (Join-Path $engine "target\release\server.exe") (Join-Path $nativeDir "server.exe") -Force
 
-# Voice data must never end up in a package we distribute.
 $stray = Get-ChildItem $addon -Recurse -File -Filter "*.zvoice"
 if ($stray) { throw "Voice data found in the add-on tree: $($stray.FullName -join ', ')" }
 
-# ---------------------------------------------------------------- 6. package
 Write-Step 6 "Packaging"
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
 $output = Join-Path $dist "googleTtsRs-$version.nvda-addon"
