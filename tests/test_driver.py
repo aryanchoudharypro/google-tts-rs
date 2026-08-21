@@ -16,130 +16,64 @@ import nvda_stubs
 driver = nvda_stubs.load_driver()
 
 
-SAMPLE_RATE = 24000
-
-
-def _ms(milliseconds: int) -> bytes:
-	return b"\x00" * (SAMPLE_RATE * 2 * milliseconds // 1000)
-
-
-def _feed_with_lookahead(lookaheadMs: int = 250):
+def test_feed_holds_one_chunk_back():
+	"""Audio is fed as it streams, one chunk behind, so a mark always has a
+	real chunk to attach its callback to."""
 	instance, player = nvda_stubs.new_driver_instance(driver)
-	feed = driver._AudioFeed(player, lookaheadMs=lookaheadMs)
-	instance._audioFeed = feed
-	return instance, player, feed
-
-
-def _fed_bytes(player) -> int:
-	return sum(len(data) for data, _ in player.feeds)
-
-
-def test_short_utterances_are_delivered_whole():
-	_instance, player, feed = _feed_with_lookahead(250)
-	feed.feed(_ms(40))
-	assert _fed_bytes(player) == 0, "an utterance shorter than the cushion has nothing to release yet"
+	feed = instance._audioFeed
+	feed.feed(b"aa")
+	assert player.feeds == [], "first chunk should be held back"
+	feed.feed(b"bb")
+	assert [data for data, _ in player.feeds] == [b"aa"]
+	feed.feed(b"cc")
+	assert [data for data, _ in player.feeds] == [b"aa", b"bb"]
 	feed.flush()
-	assert _fed_bytes(player) == len(_ms(40)), "flush must hand over everything that was held"
+	assert [data for data, _ in player.feeds] == [b"aa", b"bb", b"cc"]
 
 
-def test_audio_streams_out_once_two_windows_are_held():
-	_instance, player, feed = _feed_with_lookahead(250)
-	for _ in range(10):
-		feed.feed(_ms(100))
-	fed = _fed_bytes(player)
-	assert fed == len(_ms(500)), "everything beyond two lookahead windows must reach the device"
-
-
-def test_index_is_reported_one_lookahead_window_early():
-	"""The whole point: the callback rides a chunk that leaves ~250ms of audio
-	behind it, so NVDA sends the next utterance while this one still plays."""
-	_instance, player, feed = _feed_with_lookahead(250)
-	for _ in range(10):
-		feed.feed(_ms(100))
+def test_mark_attaches_callback_without_draining():
+	"""The whole point: an index is reported via WavePlayer's onDone rather
+	than by blocking on sync(), which is what used to stall NVDA's pipeline
+	and leave a full-stop-sized gap at every utterance boundary."""
+	instance, player = nvda_stubs.new_driver_instance(driver)
+	feed = instance._audioFeed
 	fired = []
+	feed.feed(b"aa")
+	feed.feed(b"bb")
 	feed.mark(lambda: fired.append("index"))
-	feed.flush()
 
-	assert player.syncCount == 0, "reporting an index must never drain the device"
-	assert _fed_bytes(player) == len(_ms(1000)), "all audio must reach the device"
-	assert fired == [], "the callback belongs to the device, not to this thread"
+	assert player.syncCount == 0, "marking an index must not drain the device"
+	assert [data for data, _ in player.feeds] == [b"aa", b"bb"]
+	assert player.feeds[-1][1] is not None, "callback must ride on the last chunk before the mark"
+	assert fired == [], "callback fires from the audio device, not immediately"
 
-	withCallback = [i for i, (_data, onDone) in enumerate(player.feeds) if onDone is not None]
-	assert len(withCallback) == 1, "exactly one chunk carries the index"
-	trailing = sum(len(data) for data, _ in player.feeds[withCallback[0] + 1 :])
-	assert abs(trailing - len(_ms(250))) <= len(_ms(100)), f"expected ~250ms after the index, got {trailing} bytes"
-
-
-def test_flush_reports_when_the_last_chunk_has_played():
-	"""The driver idles the audio device only once everything has drained, and
-	learns that from a callback on the very last chunk."""
-	_instance, player, feed = _feed_with_lookahead(250)
-	for _ in range(10):
-		feed.feed(_ms(100))
-	feed.mark(lambda: None)
-	drained = []
-	feed.flush(onDone=lambda: drained.append("drained"))
-
-	assert drained == [], "draining is signalled by the device, not immediately"
-	assert player.feeds[-1][1] is not None, "the final chunk must carry the drain callback"
 	player.run_done_callbacks()
-	assert drained == ["drained"]
-
-
-def test_short_utterance_still_reports_its_index():
-	"""Shorter than one window, so there is nothing to hang the callback on.
-	Reporting immediately is slightly early; losing the index would stall
-	NVDA's queue outright."""
-	_instance, player, feed = _feed_with_lookahead(250)
-	feed.feed(_ms(50))
-	fired = []
-	feed.mark(lambda: fired.append("index"))
 	assert fired == ["index"]
-	feed.flush()
-	assert _fed_bytes(player) == len(_ms(50))
 
 
-def test_mark_with_no_audio_at_all_still_reports():
-	_instance, player, feed = _feed_with_lookahead(250)
+def test_mark_with_nothing_pending_reports_immediately():
+	"""A swallowed index would stall NVDA's queue outright, so when there is
+	no audio to attach to, report right away rather than dropping it."""
+	instance, player = nvda_stubs.new_driver_instance(driver)
 	fired = []
-	feed.mark(lambda: fired.append("index"))
+	instance._audioFeed.mark(lambda: fired.append("index"))
 	assert fired == ["index"]
 	assert player.feeds == []
-
-
-def test_flush_releases_everything_held_back():
-	_instance, player, feed = _feed_with_lookahead(250)
-	feed.feed(_ms(100))
-	feed.flush()
-	assert _fed_bytes(player) == len(_ms(100))
 
 
 def test_reset_drops_held_audio():
-	_instance, player, feed = _feed_with_lookahead(250)
-	for _ in range(10):
-		feed.feed(_ms(100))
-	before = _fed_bytes(player)
-	feed.reset()
-	feed.flush()
-	assert _fed_bytes(player) == before, "retained audio must not leak into the next utterance"
+	instance, player = nvda_stubs.new_driver_instance(driver)
+	instance._audioFeed.feed(b"aa")
+	instance._audioFeed.reset()
+	instance._audioFeed.flush()
+	assert player.feeds == [], "held-back audio must not leak into the next utterance"
 
 
 def test_empty_chunks_are_ignored():
-	_instance, player, feed = _feed_with_lookahead(250)
-	feed.feed(b"")
-	feed.flush()
+	instance, player = nvda_stubs.new_driver_instance(driver)
+	instance._audioFeed.feed(b"")
+	instance._audioFeed.flush()
 	assert player.feeds == []
-
-
-def test_flush_leaves_nothing_behind_for_the_next_utterance():
-	_instance, player, feed = _feed_with_lookahead(250)
-	for _ in range(10):
-		feed.feed(_ms(100))
-	feed.flush()
-	player.feeds.clear()
-	feed.feed(_ms(40))
-	feed.flush()
-	assert _fed_bytes(player) == len(_ms(40)), "the next utterance must start from an empty buffer"
 
 
 def _segments(text: str, fastFirst: bool = False) -> list[str]:

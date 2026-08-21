@@ -16,6 +16,33 @@ User's stated constraints: no Node.js (RAM cost on low-spec machines is the
 explicit objection), Rust or Go preferred, incremental "take it slow but
 checked" pace — verify each step against ground truth before building on it.
 
+## 2026-08-22 update, part 8: **the lookahead was reverted.** Read this before trying it again
+
+The 250 ms lookahead in part 7 did make say-all gapless, and the user rejected
+it: "this made it even more slow etc. not liking this at all". The audio path
+is back to what 0.3.0 shipped (hold one chunk, ~40 ms) plus the voice-switching
+fix.
+
+The reason is a tradeoff part 7 measured but weighted wrongly. Holding two
+250 ms windows means no sound leaves the driver until 500 ms of PCM exists, so
+*every* utterance pays that - including a single arrow-key line, a character
+echo, a menu item. Say-all is a small fraction of what a screen reader says,
+and the responsiveness cost was charged to all of it. Gapless say-all is not
+worth a laggy caret.
+
+Measured on the same 12-line harness after the revert: 9 underruns totalling
+506 ms, worst 113 ms, wall clock 35.66 s for 34.12 s of audio. That is the
+line-boundary gap the user originally reported, and it is the accepted state.
+
+If this is ever picked up again, the constraint to respect is that the fix must
+not add latency to short utterances. Something adaptive - lookahead only once
+several utterances have arrived back to back, i.e. once say-all is actually
+happening - is the only version worth building. A fixed window is not.
+
+`tests/sim_player.py` and `tests/test_continuity.py` are kept for exactly that
+work. `test_continuity.py` now reports underruns by design; it is a measuring
+instrument, not a pass/fail gate, and is deliberately not in `build.ps1`.
+
 ## 2026-08-22 update, part 7: **continuous reading is gapless.** The lookahead buffer, and the three bugs the first attempt introduced
 
 Reported symptom: in say-all, the voice stopped at every line break as though

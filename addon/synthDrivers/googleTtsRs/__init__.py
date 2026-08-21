@@ -38,73 +38,67 @@ _SpeechRequest = tuple[list[Any], str, int, int, int, threading.Event]
 
 
 class _AudioFeed:
-	"""Feeds PCM to NVDA's WavePlayer and reports indexes a fixed amount of
-	audio before they are actually reached.
+	"""Feeds PCM to NVDA's WavePlayer while keeping index reporting accurately
+	timed *without* draining the audio device.
 
-	NVDA's speech manager hands the synth the next utterance the moment the
-	previous one's end-of-utterance index is reported (`_handleIndex` ->
-	`_pushNextSpeech`), not when `synthDoneSpeaking` fires. So an index
-	reported exactly at the end of the audio leaves no time to synthesize
-	what comes next, and every utterance boundary gets a gap the length of
-	our own synthesis latency. That is what makes continuous reading stop at
-	each line, wrapped or not, while eSpeak (which synthesizes in-process in
-	a few milliseconds) does not.
+	Why this exists: NVDA's speech manager pushes the next utterance to the
+	synth the moment the previous utterance's end-of-utterance index is
+	reported (`_handleIndex` -> `_pushNextSpeech`), not when
+	`synthDoneSpeaking` fires. A driver that blocks on `WavePlayer.sync()`
+	before reporting an index therefore reports it only once the audio has
+	fully drained, which stalls the pipeline and leaves an audible
+	full-stop-like gap at every utterance boundary — most noticeable when
+	reading continuously across lines that have no sentence punctuation.
 
-	The fix is to report the index while `LOOKAHEAD_MS` of audio is still
-	queued, so the next utterance is synthesized during that window and its
-	audio butts straight up against this one. `WavePlayer.feed()`'s `onDone`
-	fires when a specific chunk finishes playing, so this holds back up to
-	two lookahead windows of audio: on a mark, the older window is fed
-	carrying the callback and the newer window is fed behind it. The
-	callback then lands exactly one window before the end regardless of how
-	much audio the device still has buffered.
-
-	The cost is that indexes run at most `LOOKAHEAD_MS` ahead of the sound,
-	which in say-all means the caret leads the voice by that much.
+	`WavePlayer.feed()` takes an `onDone` callback that fires when that
+	specific chunk finishes playing; this is how NVDA's own oneCore and
+	eSpeak drivers report indexes. Reporting an index accurately therefore
+	means attaching the callback to the last chunk of audio *before* it, so
+	this class holds each chunk back until the next one arrives and hands
+	the held-back chunk to `feed()` together with the callback when a mark
+	lands. Holding one chunk back costs roughly one chunk of extra startup
+	latency (~40ms at this engine's chunk size) and buys gapless playback
+	across utterances.
 	"""
 
-	LOOKAHEAD_MS = 250
-
-	def __init__(self, player: Any, lookaheadMs: int | None = None) -> None:
+	def __init__(self, player: Any) -> None:
 		self._player = player
 		self._lock = threading.Lock()
-		self._pending = bytearray()
-		lookahead = self.LOOKAHEAD_MS if lookaheadMs is None else lookaheadMs
-		self._window = max(0, int(SAMPLE_RATE * 2 * lookahead / 1000))
+		self._pending: bytes | None = None
 
 	def feed(self, pcm: bytes) -> None:
 		if not pcm:
 			return
 		with self._lock:
-			self._pending += pcm
-			release = len(self._pending) - 2 * self._window
-			if release <= 0:
-				return
-			chunk = bytes(self._pending[:release])
-			del self._pending[:release]
-		self._player.feed(chunk)
+			previous = self._pending
+			self._pending = pcm
+		if previous:
+			self._player.feed(previous)
 
-	def mark(self, onDone: Any) -> None:
+	def mark(self, onDone: "Any") -> None:
+		"""Report a position in the stream once the audio fed before it has
+		actually been played."""
 		with self._lock:
-			split = max(0, len(self._pending) - self._window)
-			head = bytes(self._pending[:split])
-			del self._pending[:split]
-		if not head:
-			onDone()
+			previous = self._pending
+			self._pending = None
+		if previous:
+			self._player.feed(previous, onDone=onDone)
 			return
-		self._player.feed(head, onDone=onDone)
+		onDone()
 
-	def flush(self, onDone: Any = None) -> None:
+	def flush(self) -> None:
 		with self._lock:
-			pending = bytes(self._pending)
-			self._pending.clear()
-		if not pending:
-			return
-		self._player.feed(pending, onDone=onDone)
+			previous = self._pending
+			self._pending = None
+		if previous:
+			self._player.feed(previous)
 
 	def reset(self) -> None:
+		"""Drop held-back audio on cancellation. `WavePlayer.stop()` already
+		discards its own queued audio and pending onDone callbacks, so this
+		just makes sure we don't feed a stale chunk into the next utterance."""
 		with self._lock:
-			self._pending.clear()
+			self._pending = None
 
 
 class SynthDriver(synthDriverHandler.SynthDriver):
@@ -153,10 +147,6 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 		self._bridge = NativeTtsBridge(self.catalog)
 		self._player = WavePlayer(channels=1, samplesPerSec=SAMPLE_RATE, bitsPerSample=16)
 		self._audioFeed = _AudioFeed(self._player)
-		self._audioDrained = threading.Event()
-		self._audioDrained.set()
-		self._playerNeedsIdle = False
-		self._audioGeneration = 0
 		self._speechCondition = threading.Condition()
 		self._speechQueue: deque[_SpeechRequest] = deque()
 		self._activeCancelEvent: threading.Event | None = None
@@ -244,8 +234,6 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			self._player.stop()
 		with suppress(Exception):
 			self._audioFeed.reset()
-		self._playerNeedsIdle = False
-		self._audioDrained.set()
 		with suppress(Exception):
 			self._bridge.cancel_current()
 
@@ -417,22 +405,13 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 
 	def _speech_loop(self) -> None:
 		while not self._shutdownEvent.is_set():
-			request = None
 			with self._speechCondition:
 				while not self._speechQueue and not self._shutdownEvent.is_set():
-					if self._playerNeedsIdle and self._audioDrained.is_set():
-						break
 					self._speechCondition.wait()
 				if self._shutdownEvent.is_set():
 					return
-				if self._speechQueue:
-					request = self._speechQueue.popleft()
-					self._activeCancelEvent = request[-1]
-			if request is None:
-				self._playerNeedsIdle = False
-				with suppress(Exception):
-					self._player.idle()
-				continue
+				request = self._speechQueue.popleft()
+				self._activeCancelEvent = request[-1]
 			try:
 				self._speak_worker(*request)
 			finally:
@@ -500,20 +479,8 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			self._put_cached_audio(cacheKey, b"".join(audioParts))
 
 	def _feed_audio(self, pcm: bytes) -> None:
-		if not pcm:
-			return
-		with self._speechCondition:
-			self._audioGeneration += 1
-		self._audioDrained.clear()
-		self._playerNeedsIdle = True
-		self._audioFeed.feed(pcm)
-
-	def _on_audio_drained(self, generation: int) -> None:
-		with self._speechCondition:
-			if generation != self._audioGeneration:
-				return
-			self._audioDrained.set()
-			self._speechCondition.notify()
+		if pcm:
+			self._audioFeed.feed(pcm)
 
 	def _mark_index(self, index: int, cancelEvent: threading.Event) -> None:
 		"""Report an index once the audio preceding it has been played, without
@@ -531,8 +498,10 @@ class SynthDriver(synthDriverHandler.SynthDriver):
 			return bool(self._speechQueue)
 
 	def _finish_request_audio(self) -> None:
-		generation = self._audioGeneration
-		self._audioFeed.flush(onDone=lambda: self._on_audio_drained(generation))
+		self._audioFeed.flush()
+		if self._has_queued_speech():
+			return
+		self._player.idle()
 
 	def _short_cache_key(self, text: str, options: dict[str, Any]) -> tuple[Any, ...] | None:
 		if len(text) > _SHORT_CACHE_MAX_CHARS:
