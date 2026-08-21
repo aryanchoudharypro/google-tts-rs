@@ -1,4 +1,5 @@
 pub mod catalog;
+pub mod modcache;
 pub mod paths;
 pub mod proto;
 mod vfs;
@@ -595,7 +596,7 @@ impl TtsEngine {
 		let engine = Engine::new(&config)?;
 
 		let bytes = std::fs::read(wasm_path)?;
-		let module = Module::new(&engine, &bytes)?;
+		let module = modcache::load(&engine, std::path::Path::new(wasm_path), &bytes)?;
 
 		let mem_ty = module
 			.imports()

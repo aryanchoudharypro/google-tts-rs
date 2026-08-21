@@ -22,6 +22,7 @@ the browser with a single native process.
 | Processes at idle | Chrome + renderer + GPU | one |
 | "Natural" voices | yes | yes |
 | Synthesis speed | — | ~12x realtime on a laptop CPU |
+| Cold start | — | ~30 ms (compiled module is cached) |
 
 ## Layout
 
@@ -63,9 +64,16 @@ python tests\test_driver.py         # text chunking and audio feeding, no NVDA n
 python tests\test_native_bridge.py  # real bridge against a real engine process (build first)
 ```
 
+```powershell
+cargo run --release --example latency      # where the time actually goes
+```
+
 Examples read voice packs from your NVDA configuration directory, falling back to the ones the
 upstream add-on downloaded. Override with `GTTS_VOICES_DIR`. `GTTS_WASM_PATH`, `GTTS_VFS_ROOT` and
 `GTTS_OUT_DIR` override the other locations.
+
+The engine caches its compiled wasm module under `%LOCALAPPDATA%\googleTtsRs\modcache`, which is what
+turns a ~2.4 s cold start into ~30 ms. `GTTS_CACHE_DIR` moves it; `GTTS_NO_MODULE_CACHE` disables it.
 
 Rust is formatted with `cargo +nightly fmt` (the config uses nightly-only import options). Python
 follows NVDA's house style: tabs, and `camelCase` for locals in add-on code.
