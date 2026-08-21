@@ -1,0 +1,11 @@
+[package]
+name = "gtts_engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+wasmtime = "47.0.3"
+wasmtime-wasi = "47.0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

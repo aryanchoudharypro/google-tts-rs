@@ -1,0 +1,21 @@
+# Rust
+/engine/target/
+
+# Build output
+/dist/
+/out/
+/addon/synthDrivers/googleTtsRs/native/
+
+# Python
+__pycache__/
+*.pyc
+/tests/_fake_nvda_config/
+
+# Voice data is downloaded per-user by the Voice Manager and must never be
+# committed: the packages are tens of megabytes each and are Google's to
+# distribute, not ours.
+*.zvoice
+
+# Local scratch
+*.wav
+*.log

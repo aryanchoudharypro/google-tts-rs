@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>Google TTS RS</title>
+</head>
+<body>
+	<h1>Google TTS RS</h1>
+
+	<p>Google TTS RS gives NVDA the Google WASM text-to-speech voices, including the high quality
+	&quot;Natural&quot; ones. The speech engine runs as a small native program bundled with the add-on, so
+	no web browser and no Node.js are involved.</p>
+
+	<h2>Getting voices</h2>
+
+	<p>No voices are included with the add-on; you download the ones you want. Open the voice manager from
+	the NVDA menu, under Tools, or press NVDA+control+shift+R. The Download tab lists every available
+	language pack, and the Installed tab lets you remove packs you no longer need.</p>
+
+	<p>Once at least one pack is installed, choose Google TTS RS as your synthesizer in NVDA's Speech
+	settings, then pick a voice.</p>
+
+	<h2>Natural voices</h2>
+
+	<p>Voices labelled &quot;Natural&quot; come from a separate, smaller pack that builds on the standard
+	pack for the same language. The voice manager downloads the standard pack automatically when you pick
+	a Natural one, so there is nothing extra to do. If you remove a standard pack, the Natural voices for
+	that language disappear from the voice list until you install it again.</p>
+
+	<h2>Settings</h2>
+
+	<p>Rate, pitch and volume work as they do with any NVDA synthesizer. Rate boost extends the top of the
+	rate range for faster reading.</p>
+
+	<h2>Disk space</h2>
+
+	<p>Voice packs are large, from a few megabytes for a Natural pack to around twenty megabytes for a
+	standard one. They are stored in your NVDA user configuration folder, under googleTtsRs\voices. Packs
+	already downloaded by the Google TTS For NVDA add-on are reused automatically, so installing both
+	add-ons does not download anything twice.</p>
+
+	<h2>Credits</h2>
+
+	<p>Google TTS RS is maintained by Aryan Choudhary. It began as a fork of Google TTS For NVDA by Dao Duc
+	Trung and Nguyen Anh Duc, and is distributed under the GNU General Public License version 2. The speech
+	engine itself is Google's and is redistributed unmodified.</p>
+</body>
+</html>
