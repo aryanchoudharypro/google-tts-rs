@@ -1,5 +1,11 @@
 # Google TTS RS
 
+> [!WARNING]
+> **Vibe-coded.** This project was written with AI assistance. It has been tested (Rust unit tests,
+> Python driver tests, and end-to-end runs against real voices in NVDA), but **the code has not been
+> reviewed line by line by a human**. Expect rough edges, and read it before you trust it with anything
+> that matters to you. Bug reports and pull requests are welcome.
+
 Google's WASM text-to-speech voices as an NVDA synthesizer, driven by a native Rust engine.
 
 No Chrome. No Node.js. One ~16 MB executable that loads the same speech engine Chrome ships, runs it
@@ -9,20 +15,32 @@ The high quality **"Natural"** (seanet) voices work, which needed real POSIX thr
 module and a faithful reimplementation of Emscripten's threading host interface — see
 [docs/engineering-notes.md](docs/engineering-notes.md).
 
-## Why
+## What it is
 
-The add-on this forked from drove the same engine by launching a headless Chrome instance per session
-and talking to it over the Chrome DevTools Protocol. That works, but a whole browser is a heavy price
-for a screen reader's speech, especially on the low-spec machines NVDA users often run. This replaces
-the browser with a single native process.
+An NVDA synthesizer add-on that speaks with Google's offline text-to-speech voices, the same ones
+Chrome and Android use, including the high quality "Natural" (seanet) voices. Voice packs are
+downloaded from Google on demand through a built-in Voice Manager and run entirely on your machine.
 
-| | Chrome bridge | Google TTS RS |
+## How it differs from the original
+
+[Google TTS For NVDA](https://github.com/nguyenanhduc09/Google-TTS-For-NVDA) drives Google's speech
+engine by launching a headless Chrome instance per session and talking to it over the Chrome DevTools
+Protocol. That works, but a whole browser is a heavy price for a screen reader's speech, especially on
+the low-spec machines NVDA users often run. This add-on replaces the browser with a single native
+process written in Rust.
+
+| | Original (Chrome bridge) | Google TTS RS |
 |---|---|---|
 | Runtime dependency | Headless Chrome | none, one bundled exe |
 | Processes at idle | Chrome + renderer + GPU | one |
 | "Natural" voices | yes | yes |
-| Synthesis speed | — | ~12x realtime on a laptop CPU |
-| Cold start | — | ~30 ms (compiled module is cached) |
+| Synthesis speed | n/a | ~12x realtime on a laptop CPU |
+| Cold start | n/a | ~30 ms (compiled module is cached) |
+
+What is new here: the Rust engine, which runs Google's unmodified WASM module on
+[wasmtime](https://wasmtime.dev/); a reimplementation of Emscripten's threading host interface so the
+Natural voices work; a cache for the compiled module; and a playback path tuned for responsiveness.
+What is kept from the original: the Voice Manager, the voice catalog and the packaging layout.
 
 ## Layout
 
